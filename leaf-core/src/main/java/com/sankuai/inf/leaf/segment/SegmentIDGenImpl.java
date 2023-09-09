@@ -4,14 +4,25 @@ import com.sankuai.inf.leaf.IDGen;
 import com.sankuai.inf.leaf.common.Result;
 import com.sankuai.inf.leaf.common.Status;
 import com.sankuai.inf.leaf.segment.dao.IDAllocDao;
-import com.sankuai.inf.leaf.segment.model.*;
-import org.perf4j.StopWatch;
-import org.perf4j.slf4j.Slf4JStopWatch;
+import com.sankuai.inf.leaf.segment.model.LeafAlloc;
+import com.sankuai.inf.leaf.segment.model.Segment;
+import com.sankuai.inf.leaf.segment.model.SegmentBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public class SegmentIDGenImpl implements IDGen {
@@ -86,7 +97,6 @@ public class SegmentIDGenImpl implements IDGen {
 
     private void updateCacheFromDb() {
         logger.info("update cache from db");
-        StopWatch sw = new Slf4JStopWatch();
         try {
             List<String> dbTags = dao.getAllTags();
             if (dbTags == null || dbTags.isEmpty()) {
@@ -125,8 +135,6 @@ public class SegmentIDGenImpl implements IDGen {
             }
         } catch (Exception e) {
             logger.warn("update cache from db exception", e);
-        } finally {
-            sw.stop("updateCacheFromDb");
         }
     }
 
@@ -156,7 +164,6 @@ public class SegmentIDGenImpl implements IDGen {
     }
 
     public void updateSegmentFromDb(String key, Segment segment) {
-        StopWatch sw = new Slf4JStopWatch();
         SegmentBuffer buffer = segment.getBuffer();
         LeafAlloc leafAlloc;
         if (!buffer.isInitOk()) {
@@ -196,7 +203,6 @@ public class SegmentIDGenImpl implements IDGen {
         segment.getValue().set(value);
         segment.setMax(leafAlloc.getMaxId());
         segment.setStep(buffer.getStep());
-        sw.stop("updateSegmentFromDb", key + " " + segment);
     }
 
     public Result getIdFromSegmentBuffer(final SegmentBuffer buffer) {

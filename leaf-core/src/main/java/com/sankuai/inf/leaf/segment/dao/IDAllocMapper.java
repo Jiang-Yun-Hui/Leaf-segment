@@ -1,7 +1,11 @@
 package com.sankuai.inf.leaf.segment.dao;
 
 import com.sankuai.inf.leaf.segment.model.LeafAlloc;
-import org.apache.ibatis.annotations.*;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Result;
+import org.apache.ibatis.annotations.Results;
+import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 import java.util.List;
 
