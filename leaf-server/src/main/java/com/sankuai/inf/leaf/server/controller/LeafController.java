@@ -2,12 +2,11 @@ package com.sankuai.inf.leaf.server.controller;
 
 import com.sankuai.inf.leaf.common.Result;
 import com.sankuai.inf.leaf.common.Status;
-import com.sankuai.inf.leaf.server.exception.LeafServerException;
-import com.sankuai.inf.leaf.server.exception.NoKeyException;
-import com.sankuai.inf.leaf.server.service.SegmentService;
+import com.sankuai.inf.leaf.exception.LeafServerException;
+import com.sankuai.inf.leaf.exception.NoKeyException;
+import com.sankuai.inf.leaf.server.utils.IdGenUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -16,12 +15,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class LeafController {
     private Logger logger = LoggerFactory.getLogger(LeafController.class);
 
-    @Autowired
-    private SegmentService segmentService;
-
     @RequestMapping(value = "/api/segment/get/{key}")
     public String getSegmentId(@PathVariable("key") String key) {
-        return get(key, segmentService.getId(key));
+        return get(key, IdGenUtil.get(key));
     }
 
     private String get(@PathVariable("key") String key, Result id) {

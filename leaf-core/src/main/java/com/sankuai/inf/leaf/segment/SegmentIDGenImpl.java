@@ -1,15 +1,17 @@
 package com.sankuai.inf.leaf.segment;
 
-import com.sankuai.inf.leaf.IDGen;
+import com.sankuai.inf.leaf.SegmentIdGenerator;
 import com.sankuai.inf.leaf.common.Result;
 import com.sankuai.inf.leaf.common.Status;
 import com.sankuai.inf.leaf.segment.dao.IDAllocDao;
+import com.sankuai.inf.leaf.segment.dao.impl.IDAllocDaoImpl;
 import com.sankuai.inf.leaf.segment.model.LeafAlloc;
 import com.sankuai.inf.leaf.segment.model.Segment;
 import com.sankuai.inf.leaf.segment.model.SegmentBuffer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.sql.DataSource;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -25,7 +27,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class SegmentIDGenImpl implements IDGen {
+public class SegmentIDGenImpl implements SegmentIdGenerator {
     private static final Logger logger = LoggerFactory.getLogger(SegmentIDGenImpl.class);
 
     /**
@@ -48,9 +50,15 @@ public class SegmentIDGenImpl implements IDGen {
      * 一个Segment维持时间为15分钟
      */
     private static final long SEGMENT_DURATION = 15 * 60 * 1000L;
-    private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<Runnable>(), new UpdateThreadFactory());
+    private ExecutorService service = new ThreadPoolExecutor(5, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<>(), new UpdateThreadFactory());
+    ScheduledExecutorService checkService = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r);
+        t.setName("check-idCache-thread");
+        t.setDaemon(true);
+        return t;
+    });
     private volatile boolean initOK = false;
-    private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<String, SegmentBuffer>();
+    private Map<String, SegmentBuffer> cache = new ConcurrentHashMap<>();
     private IDAllocDao dao;
 
     public static class UpdateThreadFactory implements ThreadFactory {
@@ -68,8 +76,9 @@ public class SegmentIDGenImpl implements IDGen {
     }
 
     @Override
-    public boolean init() {
+    public boolean init(DataSource dataSource) {
         logger.info("Init ...");
+        dao = new IDAllocDaoImpl(dataSource);
         // 确保加载到kv后才初始化成功
         updateCacheFromDb();
         initOK = true;
@@ -77,22 +86,14 @@ public class SegmentIDGenImpl implements IDGen {
         return initOK;
     }
 
+    @Override
+    public void shutdown() {
+        service.shutdown();
+        checkService.shutdown();
+    }
+
     private void updateCacheFromDbAtEveryMinute() {
-        ScheduledExecutorService service = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
-            @Override
-            public Thread newThread(Runnable r) {
-                Thread t = new Thread(r);
-                t.setName("check-idCache-thread");
-                t.setDaemon(true);
-                return t;
-            }
-        });
-        service.scheduleWithFixedDelay(new Runnable() {
-            @Override
-            public void run() {
-                updateCacheFromDb();
-            }
-        }, 60, 60, TimeUnit.SECONDS);
+        checkService.scheduleWithFixedDelay(this::updateCacheFromDb, 60, 60, TimeUnit.SECONDS);
     }
 
     private void updateCacheFromDb() {
@@ -106,12 +107,7 @@ public class SegmentIDGenImpl implements IDGen {
             Set<String> insertTagsSet = new HashSet<>(dbTags);
             Set<String> removeTagsSet = new HashSet<>(cacheTags);
             //db中新加的tags灌进cache
-            for(int i = 0; i < cacheTags.size(); i++){
-                String tmp = cacheTags.get(i);
-                if(insertTagsSet.contains(tmp)){
-                    insertTagsSet.remove(tmp);
-                }
-            }
+            cacheTags.forEach(insertTagsSet::remove);
             for (String tag : insertTagsSet) {
                 SegmentBuffer buffer = new SegmentBuffer();
                 buffer.setKey(tag);
@@ -123,12 +119,7 @@ public class SegmentIDGenImpl implements IDGen {
                 logger.info("Add tag {} from db to IdCache, SegmentBuffer {}", tag, buffer);
             }
             //cache中已失效的tags从cache删除
-            for(int i = 0; i < dbTags.size(); i++){
-                String tmp = dbTags.get(i);
-                if(removeTagsSet.contains(tmp)){
-                    removeTagsSet.remove(tmp);
-                }
-            }
+            dbTags.forEach(removeTagsSet::remove);
             for (String tag : removeTagsSet) {
                 cache.remove(tag);
                 logger.info("Remove tag {} from IdCache", tag);
@@ -189,7 +180,7 @@ public class SegmentIDGenImpl implements IDGen {
             } else {
                 nextStep = nextStep / 2 >= buffer.getMinStep() ? nextStep / 2 : nextStep;
             }
-            logger.info("leafKey[{}], step[{}], duration[{}mins], nextStep[{}]", key, buffer.getStep(), String.format("%.2f",((double)duration / (1000 * 60))), nextStep);
+            logger.info("leafKey[{}], step[{}], duration[{}mins], nextStep[{}]", key, buffer.getStep(), String.format("%.2f", ((double) duration / (1000 * 60))), nextStep);
             LeafAlloc temp = new LeafAlloc();
             temp.setKey(key);
             temp.setStep(nextStep);
@@ -211,26 +202,23 @@ public class SegmentIDGenImpl implements IDGen {
             try {
                 final Segment segment = buffer.getCurrent();
                 if (!buffer.isNextReady() && (segment.getIdle() < 0.9 * segment.getStep()) && buffer.getThreadRunning().compareAndSet(false, true)) {
-                    service.execute(new Runnable() {
-                        @Override
-                        public void run() {
-                            Segment next = buffer.getSegments()[buffer.nextPos()];
-                            boolean updateOk = false;
-                            try {
-                                updateSegmentFromDb(buffer.getKey(), next);
-                                updateOk = true;
-                                logger.info("update segment {} from db {}", buffer.getKey(), next);
-                            } catch (Exception e) {
-                                logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
-                            } finally {
-                                if (updateOk) {
-                                    buffer.wLock().lock();
-                                    buffer.setNextReady(true);
-                                    buffer.getThreadRunning().set(false);
-                                    buffer.wLock().unlock();
-                                } else {
-                                    buffer.getThreadRunning().set(false);
-                                }
+                    service.execute(() -> {
+                        Segment next = buffer.getSegments()[buffer.nextPos()];
+                        boolean updateOk = false;
+                        try {
+                            updateSegmentFromDb(buffer.getKey(), next);
+                            updateOk = true;
+                            logger.info("update segment {} from db {}", buffer.getKey(), next);
+                        } catch (Exception e) {
+                            logger.warn(buffer.getKey() + " updateSegmentFromDb exception", e);
+                        } finally {
+                            if (updateOk) {
+                                buffer.wLock().lock();
+                                buffer.setNextReady(true);
+                                buffer.getThreadRunning().set(false);
+                                buffer.wLock().unlock();
+                            } else {
+                                buffer.getThreadRunning().set(false);
                             }
                         }
                     });
@@ -267,12 +255,12 @@ public class SegmentIDGenImpl implements IDGen {
         int roll = 0;
         while (buffer.getThreadRunning().get()) {
             roll += 1;
-            if(roll > 10000) {
+            if (roll > 10000) {
                 try {
                     TimeUnit.MILLISECONDS.sleep(10);
                     break;
                 } catch (InterruptedException e) {
-                    logger.warn("Thread {} Interrupted",Thread.currentThread().getName());
+                    logger.warn("Thread {} Interrupted", Thread.currentThread().getName());
                     break;
                 }
             }

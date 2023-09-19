@@ -5,7 +5,6 @@ public class Result {
     private Status status;
 
     public Result() {
-
     }
     public Result(long id, Status status) {
         this.id = id;
